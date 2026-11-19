@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { getDb, initDb } from './db.js';
+import { words } from './text.js';
 import { ingest, recomputeFacts } from './ingest.js';
 import { ask, entityDetail, graph, insights, memory, search, stats } from './query.js';
 import { wikiSearch } from './sources.js';
@@ -241,6 +242,7 @@ const server = http.createServer(async (req, res) => {
       const kind = body.kind || 'text';
       const input = { kind, title: body.title, text: body.text, url: body.url, useLLM: body.useLLM !== false };
       if (kind === 'text' && !String(body.text || '').trim()) return json(res, 400, { error: 'Nothing to index' });
+      if (kind === 'text' && words(String(body.text)).length < 12) return json(res, 400, { error: 'A note needs at least a dozen words to be worth indexing' });
       if (kind === 'url' && !String(body.url || '').trim()) return json(res, 400, { error: 'A URL is required' });
       if (kind === 'wikipedia' && !String(body.title || '').trim()) return json(res, 400, { error: 'An article title is required' });
       const label = kind === 'text' ? (body.title || 'New note') : (body.title || body.url || 'Source');

@@ -282,7 +282,7 @@ export async function ask(question, { limit = 6 } = {}) {
   }).slice(0, 5);
 
   const sources = found.results.map((r, i) => ({
-    n: i + 1, title: r.title, url: r.url, domain: r.domain, text: r.snippet, chunkId: r.chunkId, score: r.score,
+    n: i + 1, docId: r.docId, title: r.title, url: r.url, domain: r.domain, text: r.snippet, chunkId: r.chunkId, score: r.score,
   }));
   if (!sources.length) {
     return { question, answer: "I don't have anything indexed that speaks to that yet. Add a source and ask again.", mode: 'empty', sources: [], facts: [], llm: await llmStatus() };

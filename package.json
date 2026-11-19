@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node server/node.js",
     "dev": "node --watch server/node.js",
-    "test": "node --test test/",
+    "test": "node --test",
     "seed": "node scripts/seed.js"
   }
 }

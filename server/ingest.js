@@ -27,13 +27,17 @@ export async function resolveSource(input) {
   const text = String(input.text || '').trim();
   if (words(text).length < 12) throw new Error('A note needs at least a dozen words to be worth indexing');
   if (text.length > 400_000) throw new Error('That note is too large (400k character limit)');
+  // A note may cite the page it is about; that page's domain is what makes the
+  // note an independent witness of the same claim.
+  const url = /^https?:\/\//i.test(String(input.url || '')) ? String(input.url) : null;
+  const domain = input.domain || (url ? hostOf(url) : null) || 'local';
   return {
     title: (input.title || firstLine(text) || 'Untitled note').slice(0, 160),
     text,
-    url: null,
-    domain: input.domain || 'local',
+    url,
+    domain,
     kind: 'note',
-    trust: 0.7,
+    trust: url ? trustForDomain(domain) : 0.7,
     summary: summarize(text, 2),
     retrievedAt: new Date().toISOString(),
     publishedAt: input.publishedAt || null,
@@ -48,6 +52,39 @@ function firstLine(text) {
 /**
  * Full ingestion pipeline. `log(message, level?)` receives progress updates.
  */
+const AGENT_ONLY = new Set(['created', 'founded', 'led', 'studied_at', 'worked_for', 'member_of']);
+let typeOfStmt = null;
+function typeOfEntity(id) {
+  typeOfStmt ??= getDb().prepare('SELECT type FROM entities WHERE id = ?');
+  return typeOfStmt.get(id);
+}
+
+/**
+ * Only people and organisations create, lead, study or work. A concept as the
+ * subject of "created" is almost always a reversed or mis-parsed sentence.
+ */
+// "Web created the Semantic Web", "RDF created W3C": a concept-shaped name is
+// never the agent of a creation, whatever type inference guessed for it.
+const NON_AGENT_NAME = /\b(web|graph|data|model|language|system|standard|protocol|network|consortium|framework|format|database|ontology|markup)\b/i;
+
+function plausibleClaim(entityId, rel, objectId = null) {
+  const subject = typeOfEntity(entityId);
+  const type = subject?.type;
+  if (rel === 'born_in' || rel === 'died_in') return type === 'person';
+  if (!AGENT_ONLY.has(rel)) return true;
+  if (NON_AGENT_NAME.test(subject?.name || '')) return false;
+  if (type !== 'person' && type !== 'organization') return false;
+  // "X created Y" where Y is a person is almost always a reversed passive.
+  if ((rel === 'created' || rel === 'founded') && objectId) {
+    const objType = typeOfEntity(objectId)?.type;
+    if (objType === 'person') return false;
+    // "RDF was created by the W3C" reversed would read "RDF created W3C":
+    // only agents create organizations, never concepts.
+    if (objType === 'organization' && type !== 'organization' && type !== 'person') return false;
+  }
+  return true;
+}
+
 export async function ingest(input, log = () => {}) {
   log('Resolving source…');
   const src = await resolveSource(input);
@@ -164,7 +201,7 @@ function persist(db, { docId, src, parsed, refined, now }) {
     }
   }
 
-  const upsertFact = db.prepare(`INSERT INTO facts (subject_id, predicate, object, object_id, doc_id, snippet, confidence, supports, sources, status, created_at, updated_at, last_seen)
+const upsertFact = db.prepare(`INSERT INTO facts (subject_id, predicate, object, object_id, doc_id, snippet, confidence, supports, sources, status, created_at, updated_at, last_seen)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
     ON CONFLICT(subject_id, predicate, object) DO UPDATE SET
       supports = facts.supports + 1,
@@ -186,7 +223,7 @@ function persist(db, { docId, src, parsed, refined, now }) {
     if (!docs.includes(docId)) docs.push(docId);
     upsertEdge.get(a, b, e.rel, e.weight, JSON.stringify(docs.slice(-40)), now, now);
     edgeCount++;
-    if (FACT_PREDICATES.has(e.rel)) {
+    if (FACT_PREDICATES.has(e.rel) && plausibleClaim(a, e.rel, b)) {
       const objName = db.prepare('SELECT name FROM entities WHERE id = ?').get(b)?.name || e.dstKey;
       factStatements.push({ subjectId: a, predicate: e.rel, object: objName, objectId: b, snippet: e.sentence });
     }
@@ -241,16 +278,38 @@ function persist(db, { docId, src, parsed, refined, now }) {
   return { entities: entityIds.size, edges: edgeCount, facts: factCount, chunks: 0 };
 }
 
+/** Predicates that hold one value per subject; only these can truly contradict. */
+const FUNCTIONAL = new Set(['born_in', 'died_in', 'founded', 'located_in', 'capital_of', 'spouse', 'succeeded']);
+
 function hasConflict(db, fact, docId) {
-  if (fact.predicate === 'related_to') return false;
+  if (!FUNCTIONAL.has(fact.predicate)) return false;
   const other = db.prepare(`SELECT id FROM facts WHERE subject_id = ? AND predicate = ? AND object <> ? AND status <> 'rejected' LIMIT 1`)
     .get(fact.subjectId, fact.predicate, fact.object);
   return Boolean(other);
 }
 
+/**
+ * Drop claims that cannot be true of their subject (a concept born somewhere,
+ * a person created by an organisation) and reciprocal "created" pairs where the
+ * non-agent direction survives. Keeps the memory from accumulating contradictions
+ * it can never resolve.
+ */
+function pruneFacts(db) {
+  const rows = db.prepare(`SELECT f.id, f.subject_id, f.object_id, f.predicate, s.type AS subject_type, o.type AS object_type
+    FROM facts f JOIN entities s ON s.id = f.subject_id LEFT JOIN entities o ON o.id = f.object_id`).all();
+  const byPair = new Map();
+  for (const r of rows) if (r.object_id) byPair.set(`${r.subject_id}:${r.object_id}:${r.predicate}`, r);
+  const del = db.prepare('DELETE FROM facts WHERE id = ?');
+  for (const r of rows) {
+    if (r.subject_type && plausibleClaim(r.subject_id, r.predicate, r.object_id)) continue;
+    del.run(r.id);
+  }
+}
+
 /** Re-derive confidence/status for every fact (used after manual memory edits). */
 export function recomputeFacts() {
   const db = getDb();
+  pruneFacts(db);
   const rows = db.prepare('SELECT id, subject_id, predicate, object, sources, status FROM facts').all();
   const upd = db.prepare('UPDATE facts SET confidence = ?, status = ?, updated_at = ? WHERE id = ?');
   const now = new Date().toISOString();

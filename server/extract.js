@@ -6,6 +6,9 @@ const TEMPORAL = new Set(`january february march april may june july august sept
 const SENTENCE_STARTERS = new Set(`the this that these those it he she they we i you his her its their our a an in on at by for from with as after before during when while if but and or however although though because since there here what who which how why yes no one two three four five six seven eight nine ten first second third later meanwhile instead still yet thus therefore modern recent early today many most some various several another each both such other new other's`.split(/\s+/));
 const PERSON_CUE = /\b(born|died|coined|studied|graduated|argued|authored|wrote|professor|philosopher|scientist|physicist|mathematician|chemist|biologist|poet|novelist|painter|composer|engineer|economist|historian|president|politician|king|queen|emperor|activist|journalist|architect|he|she|his|her)\b/i;
 
+const KNOWN_ORGS = /\b(W3C|World Wide Web Consortium|ISO|IEC|IEEE|IETF|ICANN|ANSI|NIST|CERN|MIT|NASA|ECMA|ITU|OASIS|Apache Software Foundation|Apache TinkerPop|Wikimedia Foundation|Wikimedia Deutschland|Google|HumRRO|Wikidata)\b/;
+const KNOWN_PEOPLE = /\b(Tim Berners-Lee|Berners-Lee|Ada Lovelace|Queen Elizabeth II|Arun Ganesh|Marc Wirk|Andrew Edmonds|Nigel Shadbolt|Rosemary Leith)\b/;
+const PERSON_NAME = /^(?:\p{Lu}[\p{L}'’.-]+(?:\s+|[-])){1,3}\p{Lu}[\p{L}'’.-]+$/u;
 const ORG = /(university|institute|institut|college|school|laborator|company|corporation|corp|inc\b|llc|ltd|foundation|agency|council|association|committee|society|museum|bank|group|club|team|organization|organisation|ministry|department|bureau|court|parliament|congress|academy|project|initiative|consortium|network|alliance|federation|union|party|church|army|navy|airlines)/i;
 const PLACE = /\b(city|town|village|country|state|province|county|region|district|island|river|lake|mountain|valley|desert|sea|ocean|bay|peninsula|continent|republic|kingdom|empire|capital|territory|area|province|prefecture|gulf|strait|park|forest|volcano|glacier)\b/i;
 const EVENT = /\b(war|battle|treaty|revolution|conference|summit|election|crisis|pandemic|expedition|festival|olympics|movement|rebellion|siege|act of|accord|agreement|protest|strike)\b/i;
@@ -44,7 +47,9 @@ const GAP_CUES = [
   { rel: 'located_in', re: /\b(?:located in|based in|headquartered in|situated in|founded in|established in)\b/i },
   { rel: 'worked_for', re: /\b(?:works? (?:at|for)|worked (?:at|for)|employed by|joined|serves? as)\b/i },
   { rel: 'studied_at', re: /\b(?:studied (?:at|from)|graduated from|attended)\b/i },
-  { rel: 'led', re: /\b(?:leads?|led|directs?|directed|heads?|headed|runs?|ran|manages?|managed|president of|ceo of)\b/i },
+  // "... run by X" is passive: it names an operator, not a leader, and is
+  // handled by the passive branch above.
+  { rel: 'led', re: /\b(?:leads?|led|directs?|directed|heads?|headed|runs?(?!\s+by)|ran(?!\s+by)|manages?(?!\s+by)|managed(?!\s+by)|president of|ceo of)\b/i },
   { rel: 'influenced', re: /\b(?:influenced|inspired|shaped|informed|built upon)\b/i },
   { rel: 'based_on', re: /\b(?:based on|derived from|adapted from|extends|builds on)\b/i },
   { rel: 'uses', re: /\b(?:uses?|utilizes?|relies on|depends on|employs|adopts|integrated)\b/i },
@@ -57,7 +62,18 @@ const GAP_CUES = [
   { rel: 'opposed', re: /\b(?:opposed|criticized|criticised|challenged)\b/i },
   { rel: 'created', re: /\b(?:founded|co-?founded|created|developed|invented|designed|built|introduced|launched|released|published|wrote|composed|established|formed|started|produced|coined|proposed|pioneered|announced|patented|released)\b/i },
 ];
-const PASSIVE_RE = /\b(?:was|were|is|are|has been|have been)\s+(\w+ed|built|made|written|run|led|known)\s+by\b/i;
+const PASSIVE_RE = /\b(?:was|were|is|are|has been|have been)\s+(?:\w+ly\s+)?(\w+ed|built|made|written|run|led|known|held|kept)\s+by\b/i;
+const PASSIVE_REL = {
+  ran: 'led', run: 'led', managed: 'led', headed: 'led', operated: 'led', held: 'led', kept: 'led',
+  created: 'created', developed: 'created', invented: 'created', designed: 'created', built: 'created',
+  produced: 'created', written: 'created', composed: 'created', painted: 'created', authored: 'created',
+  published: 'created', introduced: 'created', proposed: 'created', formulated: 'created',
+  discovered: 'created', coined: 'created', founded: 'founded', established: 'founded', formed: 'founded', started: 'founded',
+};
+// A sentence in the passive voice with no agent names no actor, so its subject
+// is the patient, not the creator. Knighted, awarded, etc. are not creation.
+const PASSIVE_NO_AGENT = /\b(?:was|were|is|are|has been|have been)\s+(?:\w+ly\s+)?(?:\w+ed|built|made|written|run|led|known|held|kept)\b/i;
+const PREP_TAIL = /\b(?:in|on|at|for|from|with|of|to|about|between|among|including|via|per|after|before|during|under|over|into|onto|than|along)\s+(?:the\s+|a\s+|an\s+)?$/i;
 
 const PREPOSITIONS = new Set(['in','on','at','by','for','from','with','of','to','and','or','but','as','during','after','before','since','including','according','however','although','while','when','where','which','that','this','these','those','its','their','his','her','between','through','under','over','into','onto','than','then','there','here','also','both','such','many','most','some','all','any','each','other','another','more','less','very','only','just','not','no','yes','it','they','we','you','he','she']);
 const NOISE_WORDS = new Set(['history','introduction','overview','background','contents','references','summary','conclusion','examples','example','see','further','reading','external','links','notes','sources','bibliography','gallery','early','modern','recent','today','meanwhile','however','although','instead','notably','generally','usually','specifically','addition','contrast','general','main','other','various','similar','different','following','above','below','left','right','first','second','third','last','next']);
@@ -128,31 +144,50 @@ function candidateSpans(sentence, titlePhrase = '') {
   return kept.sort((a, b) => a.start - b.start);
 }
 
+const NON_ENTITY = new Set(`others other it this that these those they them he him she her we us you i one some many most both each another such all none any everyone someone anyone everything something nothing several various`.split(/\s+/));
+
 function cleanName(raw) {
   let s = raw.replace(/^[\s"'“”(\[]+/, '').replace(/[\s"'“”),;:.]+$/, '');
   s = s.replace(/^The\s+(?=\p{Lu})/u, '');
   s = s.replace(/’s$|'s$/, '');
-  return s.trim();
+  s = s.trim();
+  return NON_ENTITY.has(s.toLowerCase()) ? '' : s;
 }
 
+const CONCEPT_TAIL = /\b(web|graph|model|language|system|protocol|standard|network|data|science|theory|method|format|database|ontology|framework|consortium)\b/i;
 const PERSON_ROLE = /\b(philosopher|scientist|physicist|mathematician|chemist|biologist|economist|historian|professor|poet|novelist|writer|author|painter|composer|architect|engineer|politician|president|prime minister|king|queen|emperor|activist|journalist|entrepreneur|inventor)\b/i;
 const PERSON_VERB = /^(?:was\s+|is\s+)?(?:born|died|studied|graduated|coined|argued|wrote|taught|served|received|won|became|emigrated|lectured)\b/i;
-const ORG_CUE = /\b(company|firm|startup|corporation|acquired|launched|released|unveiled|announced|introduced|headquartered|subsidiary|ceo)\b/i;
+const ORG_CUE = /\b(company|firm|startup|corporation|subsidiary|headquartered|ceo|employees|revenue)\b/i;
 
 export function inferType(name, context = '') {
-  if (ORG.test(name)) return 'organization';
+  if (KNOWN_PEOPLE.test(name)) return 'person';
+  // "Semantic Web", "World Wide Web" and "knowledge graph" are concepts even
+  // when the sentence around them talks about founding or organizations.
+  if (CONCEPT_TAIL.test(name) && !ORG.test(name)) return 'concept';
+  if (ORG.test(name) || KNOWN_ORGS.test(name)) return 'organization';
   if (PLACE.test(name)) return 'place';
   if (WORK.test(name)) return 'work';
   if (EVENT.test(name)) return 'event';
+  if (PERSON_NAME.test(name)) return 'person';
   const multi = /^\p{Lu}[\p{L}'’.-]+(?:\s+\p{Lu}[\p{L}'’.-]+){1,3}$/u.test(name);
   if (multi) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const after = new RegExp(`(?:^|\\W)${esc}\\s+(?:was\\s+|is\\s+|were\\s+)?([a-z]+)`, 'i').exec(context);
     const verb = after ? `${after[1]} ` : '';
-    if (PERSON_VERB.test(verb) || (PERSON_ROLE.test(context) && /\b(he|she|his|her|who)\b/i.test(context))) return 'person';
+    // "The Semantic Web was born in …" must not make a concept a person: only a
+    // person-shaped name can be typed by the born/died/wrote family of verbs.
+    if ((PERSON_VERB.test(verb) && !CONCEPT_TAIL.test(name)) || (PERSON_ROLE.test(context) && /\b(he|she|his|her|who)\b/i.test(context))) return 'person';
   }
-  if (ORG.test(context) && /\b(founded|company|firm|research|institute|laboratory)\b/i.test(context)) return 'organization';
-  if (ORG_CUE.test(context) && (multi || /^[\p{Lu}][\p{L}\d.&-]+$/u.test(name))) return 'organization';
+  // Only the name itself as the subject of an incorporation verb makes it an
+  // organisation. ORG.test(context) used to fire on "consortium"/"network" in
+  // the sentence, which turned "RDF" into an organisation whenever "World Wide
+  // Web Consortium" shared the sentence.
+  if (!CONCEPT_TAIL.test(name)) {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const orgVerb = new RegExp(`(?:^|\\W)${esc}\\s+(?:was\\s+|is\\s+|were\\s+)?(?:founded|headquartered|acquired|formed|incorporated)\\b`, 'i');
+    if (orgVerb.test(context)) return 'organization';
+  }
+  if (ORG_CUE.test(context) && (multi || /^[\p{Lu}][\p{L}\d.&-]+$/u.test(name)) && !CONCEPT_TAIL.test(name)) return 'organization';
   return 'concept';
 }
 
@@ -161,11 +196,26 @@ export function inferType(name, context = '') {
  * @param {string} text
  * @param {{title?: string}} [opts]
  */
+/**
+ * A definition's object must be a noun phrase. Long tails, relative clauses and
+ * comma-joined asides are sentence fragments, not types.
+ */
+function factObject(raw) {
+  const s = raw.replace(/\s+/g, ' ').trim().replace(/[.,;:]+$/, '');
+  if (!s || s.length > 80) return null;
+  if (/[,;]|\b(?:but|which|that|who|whom|whose|although|whereas|while|because)\b/i.test(s)) return null;
+  if (/\b(?:run|maintained|managed|owned|operated|built|made|created|held|used)\s+by\b/i.test(s)) return null;
+  if (/\b(?:in|at|on|for|with|from)\s+\d{4}\b/.test(s)) return null;
+  const w = words(s);
+  return w.length >= 1 && w.length <= 7 ? s : null;
+}
+
 export function extract(text, opts = {}) {
   const title = typeof opts === 'string' ? opts : (opts.title || '');
   const titlePhrase = title.replace(/\s*\([^)]*\)\s*$/, '').trim();
   const titleTokens = words(titlePhrase);
   const sentences = splitSentences(text);
+  const strictSingletons = words(text).length > 600;
 
   // Pass 1: collect spans and count capitalisation away from sentence start.
   const stats = new Map(); // key -> {name, count, midCount, subjectCount, sentences, variants}
@@ -212,8 +262,10 @@ export function extract(text, opts = {}) {
     }
     // A mention that happens once and carries no type signal is usually a
     // section heading or a stray capital, not a thing worth remembering.
+    // Long articles are full of headings and stray capitals, so there a single
+    // untyped mention is noise. In a short note it is often the only signal.
     const typed = ORG.test(name) || PLACE.test(name) || WORK.test(name) || EVENT.test(name);
-    if (rec.count < 2 && !typed && !isAcronym(name) && !titleTokens.some((t) => key.includes(t))) continue;
+    if (strictSingletons && rec.count < 2 && !typed && !isAcronym(name) && !titleTokens.some((t) => key.includes(t))) continue;
     accepted.set(key, {
       key, name, count: rec.count,
       sentenceCount: rec.sentences.size,
@@ -227,6 +279,7 @@ export function extract(text, opts = {}) {
   sentences.forEach((s, si) => {
     const spans = candidateSpans(s, titlePhrase).map((sp) => {
       const name = cleanName(sp.text);
+      if (!name) return null;
       const key = keyOf(name);
       return accepted.has(key) ? { ...sp, key, name: accepted.get(key).name } : null;
     }).filter(Boolean)
@@ -296,13 +349,27 @@ export function extract(text, opts = {}) {
         const b = spans[j];
         if (!a || !b || a.key === b.key) continue;
         const gap = sentence.slice(a.end, b.start);
-        if (!gap || gap.length > 180) continue;
+        if (!gap || gap.length > 140) continue;
+        // "... was released along with X" is not "X created Y".
+        if (PREP_TAIL.test(gap)) continue;
         let matched = false;
+        if (/\b(?:run|led|managed|headed|operated|maintained|owned)\s+by\b/i.test(gap) && !/^\s*(?:was|were|is|are)\b/i.test(gap)) {
+          addEdge(b.key, a.key, 'led', 0.7);
+          continue;
+        }
+        // "X was invented by Y" means Y created X, and nothing else. Trust the
+        // passive reading alone, or we would also assert the reverse.
         const passive = PASSIVE_RE.exec(gap);
         if (passive) {
-          addEdge(b.key, a.key, 'created', 0.9);
-          matched = true;
+          // A list ("...include: RDF, SKOS, SPARQL, ...") puts several names in
+          // front of the verb; the first span is not the patient of "was created by".
+          const prefix = sentence.slice(0, a.start);
+          const listy = prefix.includes(':') || (prefix.match(/,/g) || []).length >= 2;
+          const rel = PASSIVE_REL[passive[1].toLowerCase()];
+          if (rel && !listy) addEdge(b.key, a.key, rel, 0.9);
+          continue;
         }
+        if (PASSIVE_NO_AGENT.test(gap)) continue;
         for (const cue of GAP_CUES) {
           if (!cue.re.test(gap)) continue;
           addEdge(a.key, b.key, cue.rel, 0.8);
@@ -326,14 +393,13 @@ export function extract(text, opts = {}) {
       const raw = def[1].replace(/\[E(\d+)\]/g, (_, n) => spans[Number(n) - 1]?.name || '').trim();
       const relational = /^(?:part|member|component|piece|branch|division|section|element|subset)\s+of\b/i.test(raw)
         || spans.length > 2;
-      if (sp && !relational) {
-        facts.push({ subjectKey: sp.key, predicate: 'is_a', object: raw.slice(0, 90), objectKey: null, snippet: sentence.slice(0, 260) });
-      }
+      const obj = sp && !relational ? factObject(raw) : null;
+      if (obj) facts.push({ subjectKey: sp.key, predicate: 'is_a', object: obj, objectKey: null, snippet: sentence.slice(0, 260) });
     }
     const born = /\[E(\d+)\]\s+(?:was|were)\s+born\s+(?:in|on)\s+(\d{4})/i.exec(skeleton);
     if (born) {
       const sp = spans[Number(born[1]) - 1];
-      if (sp) facts.push({ subjectKey: sp.key, predicate: 'born', object: born[2], objectKey: null, snippet: sentence.slice(0, 260) });
+      if (sp && accepted.get(sp.key)?.type === 'person') facts.push({ subjectKey: sp.key, predicate: 'born', object: born[2], objectKey: null, snippet: sentence.slice(0, 260) });
     }
   }
 
