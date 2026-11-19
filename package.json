@@ -1,0 +1,14 @@
+{
+  "name": "loom",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Loom — a personal knowledge operating system that grows its own knowledge graph",
+  "type": "module",
+  "engines": { "node": ">=22.5.0" },
+  "scripts": {
+    "start": "node server/node.js",
+    "dev": "node --watch server/node.js",
+    "test": "node --test test/",
+    "seed": "node scripts/seed.js"
+  }
+}
