@@ -144,31 +144,46 @@ function candidateSpans(sentence, titlePhrase = '') {
   return kept.sort((a, b) => a.start - b.start);
 }
 
-const NON_ENTITY = new Set(`others other it this that these those they them he him she her we us you i one some many most both each another such all none any everyone someone anyone everything something nothing several various`.split(/\s+/));
+const NON_ENTITY = new Set(`others other it this that these those they them he him she her we us you i one some many most both each another such all none any everyone someone anyone everything something nothing several various ltd inc llc corp gmbh plc`.split(/\s+/));
 
 function cleanName(raw) {
   let s = raw.replace(/^[\s"'“”(\[]+/, '').replace(/[\s"'“”),;:.]+$/, '');
   s = s.replace(/^The\s+(?=\p{Lu})/u, '');
   s = s.replace(/’s$|'s$/, '');
   s = s.trim();
+  // Hostnames ("state.com") are not entities; they leak in from URLs and captions.
+  if (/\.(?:com|org|net|io|edu|gov|co|ai|dev|app)\b/i.test(s)) return '';
   return NON_ENTITY.has(s.toLowerCase()) ? '' : s;
 }
 
-const CONCEPT_TAIL = /\b(web|graph|model|language|system|protocol|standard|network|data|science|theory|method|format|database|ontology|framework|consortium)\b/i;
+const CONCEPT_TAIL = /\b(web|graphs?|graphrag|model|language|system|protocol|standard|network|data|science|theory|method|format|database|ontology|framework|consortium|schema|semantics|vault)\b/i;
+// A gazetteer small enough to be honest about: these are places even when the
+// surrounding sentence gives no city/country cue.
+const PLACE_NAMES = /^(?:london|new york(?: city)?|paris|berlin|boston|cambridge|oxford|california|massachusetts|england|united kingdom|united states|switzerland|geneva|amsterdam|san francisco|seattle|tokyo|dresden)$/i;
+// Words that mark an organization, publication or work rather than a person.
+const NON_PERSON_WORDS = /\b(wikipedia|wikimedia|commons|university|institute|college|school|foundation|association|society|council|committee|agency|ministry|department|press|times|journal|magazine|review|land|engine|corporation|company|inc|ltd|corp|gmbh|llc|unitarian|universalist|scientific american|acme)\b/i;
 const PERSON_ROLE = /\b(philosopher|scientist|physicist|mathematician|chemist|biologist|economist|historian|professor|poet|novelist|writer|author|painter|composer|architect|engineer|politician|president|prime minister|king|queen|emperor|activist|journalist|entrepreneur|inventor)\b/i;
 const PERSON_VERB = /^(?:was\s+|is\s+)?(?:born|died|studied|graduated|coined|argued|wrote|taught|served|received|won|became|emigrated|lectured)\b/i;
 const ORG_CUE = /\b(company|firm|startup|corporation|subsidiary|headquartered|ceo|employees|revenue)\b/i;
 
-export function inferType(name, context = '') {
+export /** Two capitalized words are not enough: acronyms, publications and org words are not people. */
+function personShaped(name) {
+  if (NON_PERSON_WORDS.test(name)) return false;
+  if (/(?:^|[\s-])\p{Lu}{2,}(?:[\s-]|$)/u.test(name)) return false;
+  if (/\d/.test(name) || name.includes("'s ")) return false;
+  return name.split(/\s+/).length <= 3;
+}
+
+function inferType(name, context = '') {
   if (KNOWN_PEOPLE.test(name)) return 'person';
   // "Semantic Web", "World Wide Web" and "knowledge graph" are concepts even
   // when the sentence around them talks about founding or organizations.
   if (CONCEPT_TAIL.test(name) && !ORG.test(name)) return 'concept';
   if (ORG.test(name) || KNOWN_ORGS.test(name)) return 'organization';
-  if (PLACE.test(name)) return 'place';
+  if (PLACE.test(name) || PLACE_NAMES.test(name)) return 'place';
   if (WORK.test(name)) return 'work';
   if (EVENT.test(name)) return 'event';
-  if (PERSON_NAME.test(name)) return 'person';
+  if (PERSON_NAME.test(name) && personShaped(name)) return 'person';
   const multi = /^\p{Lu}[\p{L}'’.-]+(?:\s+\p{Lu}[\p{L}'’.-]+){1,3}$/u.test(name);
   if (multi) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -206,6 +221,7 @@ function factObject(raw) {
   if (/[,;]|\b(?:but|which|that|who|whom|whose|although|whereas|while|because)\b/i.test(s)) return null;
   if (/\b(?:run|maintained|managed|owned|operated|built|made|created|held|used)\s+by\b/i.test(s)) return null;
   if (/\b(?:in|at|on|for|with|from)\s+\d{4}\b/.test(s)) return null;
+  if (/\b(?:i|me|my|we|our|you|your)\b/i.test(s)) return null;
   const w = words(s);
   return w.length >= 1 && w.length <= 7 ? s : null;
 }
@@ -352,6 +368,11 @@ export function extract(text, opts = {}) {
         if (!gap || gap.length > 140) continue;
         // "... was released along with X" is not "X created Y".
         if (PREP_TAIL.test(gap)) continue;
+        // A cue must sit in the same clause. Across a list or a sentence break the
+        // nearest verb belongs to some other pair ("..., designed with ... Turtle").
+        if (gap.split(/[.;:!?]/).filter((c) => c.trim()).length > 1) continue;
+        if ((gap.match(/,/g) || []).length >= 2) continue;
+        if (gap.length > 100) continue;
         let matched = false;
         if (/\b(?:run|led|managed|headed|operated|maintained|owned)\s+by\b/i.test(gap) && !/^\s*(?:was|were|is|are)\b/i.test(gap)) {
           addEdge(b.key, a.key, 'led', 0.7);
@@ -370,8 +391,16 @@ export function extract(text, opts = {}) {
           continue;
         }
         if (PASSIVE_NO_AGENT.test(gap)) continue;
+        // "HumRRO's presentation … coined the term" — the possessive owner is not
+        // the one doing the coining, and quoted text is somebody else's wording.
+        if (/^['’]s\b/.test(gap) || /["“”]/.test(gap)) continue;
+        // List items ("Gremlin: … SPARQL: …") are siblings, not relata.
+        const head = sentence.slice(0, a.start);
+        if (head.includes(':') || (head.match(/,/g) || []).length >= 2) continue;
         for (const cue of GAP_CUES) {
           if (!cue.re.test(gap)) continue;
+          // "founded the W3C" is one claim; do not also record it as "created".
+          if (cue.rel === 'created' && /\b(?:founded|established|formed|started)\b/i.test(gap)) continue;
           addEdge(a.key, b.key, cue.rel, 0.8);
           matched = true;
         }

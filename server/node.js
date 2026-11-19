@@ -139,19 +139,37 @@ function deleteDoc(id) {
   const db = getDb();
   const doc = db.prepare('SELECT id, title FROM docs WHERE id = ?').get(id);
   if (!doc) return null;
-  const affected = db.prepare('SELECT DISTINCT entity_id FROM doc_entities WHERE doc_id = ?').all(id).map((r) => r.entity_id);
-  const factIds = db.prepare('SELECT id, sources FROM facts WHERE doc_id = ?').all(id);
-  db.prepare('UPDATE facts SET doc_id = NULL WHERE doc_id = ?').run(id);
-  db.prepare('DELETE FROM docs WHERE id = ?').run(id); // chunks cascade via FK
-  db.prepare('DELETE FROM doc_entities WHERE doc_id = ?').run(id);
-  const upd = db.prepare('UPDATE facts SET sources = ?, updated_at = ? WHERE id = ?');
-  const del = db.prepare('DELETE FROM facts WHERE id = ?');
+  const rows = db.prepare('SELECT entity_id FROM doc_entities WHERE doc_id = ?').all(id);
+  const affected = new Set(rows.map((r) => r.entity_id));
+
+  // Relations remember which documents asserted them; drop this document's share
+  // and remove the edge outright when no source is left.
+  const updEdge = db.prepare('UPDATE edges SET doc_ids = ?, weight = ?, updated_at = ? WHERE id = ?');
+  const delEdge = db.prepare('DELETE FROM edges WHERE id = ?');
   const now = new Date().toISOString();
-  for (const f of factIds) {
-    const rest = JSON.parse(f.sources || '[]').filter((s) => s.docId !== id);
-    if (!rest.length) del.run(f.id);
-    else upd.run(JSON.stringify(rest), now, f.id);
+  for (const e of db.prepare('SELECT id, src, dst, doc_ids, weight FROM edges').all()) {
+    const docs = JSON.parse(e.doc_ids || '[]');
+    if (!docs.includes(id)) continue;
+    affected.add(e.src); affected.add(e.dst);
+    const rest = docs.filter((d) => d !== id);
+    if (!rest.length) delEdge.run(e.id);
+    else updEdge.run(JSON.stringify(rest), Math.max(0.6, Math.round((e.weight - 1) * 10) / 10), now, e.id);
   }
+
+  // Claims count documents in their source list, not just the first one.
+  const updFact = db.prepare('UPDATE facts SET sources = ?, doc_id = NULLIF(doc_id, ?), updated_at = ? WHERE id = ?');
+  const delFact = db.prepare('DELETE FROM facts WHERE id = ?');
+  for (const f of db.prepare('SELECT id, sources FROM facts').all()) {
+    const srcs = JSON.parse(f.sources || '[]');
+    if (!srcs.some((s) => s.docId === id)) continue;
+    const rest = srcs.filter((s) => s.docId !== id);
+    if (!rest.length) delFact.run(f.id);
+    else updFact.run(JSON.stringify(rest), id, now, f.id);
+  }
+
+  db.prepare('DELETE FROM docs WHERE id = ?').run(id); // chunks and doc_entities cascade
+  db.prepare('DELETE FROM doc_entities WHERE doc_id = ?').run(id);
+
   const recompute = db.prepare(`UPDATE entities SET
       mentions = (SELECT COALESCE(SUM(count),0) FROM doc_entities WHERE entity_id = entities.id),
       salience = ROUND(

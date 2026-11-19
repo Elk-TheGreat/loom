@@ -109,13 +109,18 @@ test('graph, memory and insights payloads match the views', async () => {
   assert.ok(Array.isArray(ins.body.contested));
 });
 
-test('deleting a document removes its passages and claims', async () => {
-  const created = await ingest({ kind: 'text', title: 'Temporary', useLLM: false, text: 'Ephemeral notes about zeppelins and airships fill this paragraph with enough real words.' });
+test('deleting a document removes its passages, relations and claims', async () => {
+  const before = (await json('/api/stats')).body.counts;
+  const created = await ingest({ kind: 'text', title: 'Temporary', useLLM: false, text: 'Ephemeral notes about zeppelins and airships fill this paragraph with enough real words. Amelia Earhart flew the airship over the Atlantic and wrote about zeppelins.' });
+  const mid = (await json('/api/stats')).body.counts;
+  assert.ok(mid.entities > before.entities, 'the note should add entities');
   assert.equal((await fetch(`${base}/api/docs/${created.docId}`, { method: 'DELETE' })).status, 200);
   const docs = await json('/api/docs');
   assert.ok(!docs.body.docs.some((d) => d.id === created.docId));
   const search = await json('/api/search?q=zeppelins');
   assert.ok(!search.body.results.some((r) => r.docId === created.docId));
+  const after = (await json('/api/stats')).body.counts;
+  assert.deepEqual(after, before, 'deleting the only document for an entity leaves no orphans behind');
 });
 
 test('bad requests and unknown routes fail cleanly', async () => {

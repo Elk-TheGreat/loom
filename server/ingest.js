@@ -71,6 +71,11 @@ function plausibleClaim(entityId, rel, objectId = null) {
   const subject = typeOfEntity(entityId);
   const type = subject?.type;
   if (rel === 'born_in' || rel === 'died_in') return type === 'person';
+  if (objectId && rel === 'worked_for' && typeOfEntity(objectId)?.type === 'person') return false;
+  if (objectId && rel === 'located_in') {
+    const objType = typeOfEntity(objectId)?.type;
+    if (objType === 'concept' && type === 'concept') return false;
+  }
   if (!AGENT_ONLY.has(rel)) return true;
   if (NON_AGENT_NAME.test(subject?.name || '')) return false;
   if (type !== 'person' && type !== 'organization') return false;
@@ -125,9 +130,8 @@ export async function ingest(input, log = () => {}) {
   }
 
   const result = tx((d) => persist(d, { docId, src, parsed, refined, now }));
-  result.chunks = chunks.length;
   log(`Linked ${result.entities} entities, ${result.edges} relations, ${result.facts} claims`, 'success');
-  return { docId, title, duplicate: false, ...result };
+  return { docId, title, duplicate: false, ...result, chunks: chunks.length };
 }
 
 function persist(db, { docId, src, parsed, refined, now }) {
@@ -275,7 +279,7 @@ const upsertFact = db.prepare(`INSERT INTO facts (subject_id, predicate, object,
   db.prepare("UPDATE docs SET status = 'ready', summary = COALESCE(summary, ?) WHERE id = ?")
     .run(summarize(src.text, 3), docId);
 
-  return { entities: entityIds.size, edges: edgeCount, facts: factCount, chunks: 0 };
+  return { entities: entityIds.size, edges: edgeCount, facts: factCount };
 }
 
 /** Predicates that hold one value per subject; only these can truly contradict. */

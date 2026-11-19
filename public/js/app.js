@@ -90,6 +90,8 @@ function openPalette() {
 function closePalette() {
   palette.hidden = true;
 }
+// A route change from anywhere (back button, pasted link) should dismiss the overlay.
+window.addEventListener('hashchange', closePalette);
 function goto(hash) {
   closePalette();
   location.hash = hash;

@@ -175,7 +175,8 @@ export async function renderGraph(root, { params = {} } = {}) {
 }
 
 function section(title, children) {
+  const list = Array.isArray(children) ? children : [children];
   return el('div', { class: 'insp-section' },
     el('h4', {}, el('span', { text: title })),
-    ...children);
+    ...list);
 }

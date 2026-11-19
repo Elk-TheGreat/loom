@@ -54,7 +54,7 @@ export async function renderMemory(root) {
 
   function paint() {
     const rows = current.filter((f) => status === 'all' || f.status === status);
-    document.getElementById('mem-count').textContent = `${rows.length} claims · sorted by recall weight`;
+    document.getElementById('mem-count').textContent = `${rows.length} claim${rows.length === 1 ? '' : 's'} · sorted by recall weight`;
     if (!rows.length) {
       list.replaceChildren(emptyState(
         current.length ? 'No claims with that status' : 'No claims yet',

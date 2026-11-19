@@ -110,7 +110,7 @@ deletion.
 
 ```
 server/    db, text, embed, extract, llm, sources, verify, ingest, query, node
-public/    index.html, css/app.css, js/{app,api,ui,graph}.js, js/views/*
+public/    index.html, css/{app,views}.css, js/{app,api,ui,graph}.js, js/views/*
 scripts/   seed.js
 test/      engine.test.js, api.test.js
 data/      loom.db (gitignored)
